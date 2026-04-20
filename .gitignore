@@ -1,0 +1,47 @@
+# Dependencias
+node_modules/
+
+# Producción y compilación
+dist/
+build/
+
+# Archivos de entorno y configuración sensible
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Archivos de sistema operativo
+.DS_Store
+Thumbs.db
+
+# Cobertura de pruebas (Test coverage)
+coverage/
+.nyc_output/
+
+# IDEs y Editores
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Bases de datos locales
+*.sqlite
+*.sqlite3
+
+# TypeScript
+tsroots-*.tgz
+*.tsbuildinfo

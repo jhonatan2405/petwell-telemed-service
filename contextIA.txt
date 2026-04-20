@@ -1,0 +1,314 @@
+================================================================================
+  PetWell — Telemed Service
+  contextIA.txt  |  v2.0.0  |  2026-04-13
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+1. DESCRIPCIÓN DEL SERVICIO
+─────────────────────────────────────────────────────────────────────────────
+
+Microservicio que gestiona las consultas veterinarias por telemedicina
+(video llamadas) dentro del ecosistema PetWell.
+
+Puerto: 3006 | Base URL: /api/v1/telemed
+Framework: Express + TypeScript estricto
+Base de datos: Supabase (PostgreSQL)
+Auth: JWT compartido con el resto de servicios PetWell
+
+Responsabilidades:
+  • Crear sesiones de telemedicina vinculadas a una cita (appointment)
+  • Crear sala real en Daily.co y guardar room_id / room_url auténticos
+  • Generar tokens privados por usuario (Daily.co meeting-tokens)
+  • Controlar el ciclo de vida: CREATED → IN_PROGRESS → COMPLETED / CANCELLED
+  • Validar que la cita es de tipo TELEMEDICINA antes de crear la sesión
+  • Validar acceso al token según horario de la cita (ventana -5 min)
+  • Calcular duración exacta al finalizar (para facturación)
+  • Emitir eventos de dominio (simulados vía console.log)
+  • Nunca exponer la Daily API Key al frontend
+
+─────────────────────────────────────────────────────────────────────────────
+2. MODELO DE DATOS
+─────────────────────────────────────────────────────────────────────────────
+
+TABLE telemed_sessions
+  id               UUID        PK default gen_random_uuid()
+  appointment_id   UUID        NOT NULL
+  clinic_id        UUID        NOT NULL
+  veterinarian_id  UUID        NOT NULL
+  owner_id         UUID        NOT NULL
+  pet_id           UUID        NOT NULL
+
+  room_id          VARCHAR(100) UNIQUE NOT NULL
+  room_url         TEXT        NOT NULL
+
+  status           VARCHAR(20) DEFAULT 'CREATED'
+                   -- CREATED | READY | IN_PROGRESS | COMPLETED | CANCELLED
+
+  scheduled_at     TIMESTAMPTZ NOT NULL
+  started_at       TIMESTAMPTZ (nullable)
+  ended_at         TIMESTAMPTZ (nullable)
+
+  duration_minutes INTEGER     (nullable, calculado automáticamente)
+
+  created_at       TIMESTAMPTZ DEFAULT now()
+  updated_at       TIMESTAMPTZ DEFAULT now()
+
+Índices:
+  (appointment_id)
+  (clinic_id)
+  (veterinarian_id)
+  (owner_id)
+
+Trigger: updated_at se actualiza automáticamente en cada UPDATE.
+Constraint: status IN ('CREATED','READY','IN_PROGRESS','COMPLETED','CANCELLED')
+
+─────────────────────────────────────────────────────────────────────────────
+3. ARQUITECTURA
+─────────────────────────────────────────────────────────────────────────────
+
+telemed-service/
+├── src/
+│   ├── config/
+│   │   ├── env.ts                   ← variables de entorno tipadas
+│   │   └── supabase.ts              ← cliente Supabase (service role)
+│   ├── models/
+│   │   └── telemed.model.ts         ← tipos TypeScript (TelemedSession, etc.)
+│   ├── repositories/
+│   │   └── telemed.repository.ts    ← queries Supabase
+│   ├── services/
+│   │   └── telemed.service.ts       ← lógica de negocio + validaciones
+│   ├── controllers/
+│   │   └── telemed.controller.ts    ← handlers HTTP delgados
+│   ├── routes/
+│   │   └── telemed.routes.ts        ← definición de rutas + auth middleware
+│   ├── middlewares/
+│   │   ├── auth.middleware.ts       ← JWT + authorize factory
+│   │   └── error.middleware.ts      ← errorHandler + notFoundHandler
+│   └── utils/
+│       ├── jwt.util.ts              ← verifyToken + JwtPayload
+│       ├── response.util.ts         ← successResponse / errorResponse
+│       ├── room.util.ts             ← generateRoomId / buildRoomUrl (legacy)
+│       └── daily.util.ts            ← createDailyRoom / createMeetingToken (Daily.co API)
+├── database/
+│   └── schema.sql
+├── .env
+├── .gitignore
+├── package.json
+└── tsconfig.json
+
+─────────────────────────────────────────────────────────────────────────────
+4. ENDPOINTS COMPLETOS
+─────────────────────────────────────────────────────────────────────────────
+
+Base URL: /api/v1/telemed  |  Puerto: 3006
+
+── Health ──────────────────────────────────────────────────────────────────
+GET  /health
+  → { status: "ok", service: "telemed-service" }
+  → Sin auth requerida
+
+── Sesiones ─────────────────────────────────────────────────────────────────
+POST   /api/v1/telemed/sessions
+  Body: { appointment_id, clinic_id, veterinarian_id, owner_id, pet_id, scheduled_at }
+  Acción: Valida appointment (type=TELEMEDICINA), genera room_id/room_url, persiste sesión
+  Respuesta: 201 + TelemedSession
+
+GET    /api/v1/telemed/sessions/appointment/:appointmentId
+  Acción: Obtener sesión por appointment_id
+  Acceso: DUENO_MASCOTA (solo propia), CLINIC_ADMIN/RECEPCIONISTA (su clínica), VETERINARIO
+  Respuesta: 200 + TelemedSession
+
+GET    /api/v1/telemed/sessions/:id
+  Acción: Obtener sesión por UUID
+  Acceso: igual que el anterior
+  Respuesta: 200 + TelemedSession
+
+PATCH  /api/v1/telemed/sessions/:id/start
+  Acción: status → IN_PROGRESS, registra started_at
+  Acceso: solo VETERINARIO asignado
+  Validación: no antes de (scheduled_at - 5 min)
+  Respuesta: 200 + TelemedSession
+
+PATCH  /api/v1/telemed/sessions/:id/end
+  Acción: status → COMPLETED, registra ended_at, calcula duration_minutes
+  Acceso: solo VETERINARIO asignado
+  Validación: status debe ser IN_PROGRESS
+  Respuesta: 200 + TelemedSession
+
+POST   /api/v1/telemed/sessions/:id/token
+  Acción: Genera token privado de Daily.co para entrar a la sala de videollamada
+  Acceso: solo owner_id o veterinarian_id de la sesión
+  Validaciones:
+    - now >= scheduled_at - 5 min (error 403 si es demasiado temprano)
+    - status === IN_PROGRESS (error 400 si no ha iniciado)
+  Rol en Daily:
+    VETERINARIO → is_owner: true
+    DUENO_MASCOTA → is_owner: false
+  Respuesta: 200 + { room_url, token, scheduled_at, status }
+
+PATCH  /api/v1/telemed/sessions/:id/cancel
+  Acción: status → CANCELLED
+  Acceso: todos excepto sesiones ajenas / de otra clínica
+  Validación: no se puede cancelar si COMPLETED o ya CANCELLED
+  Respuesta: 200 + TelemedSession
+
+─────────────────────────────────────────────────────────────────────────────
+5. MODELO DE SEGURIDAD
+─────────────────────────────────────────────────────────────────────────────
+
+JWT payload: { sub, email, role, clinic_id?, iat, exp }
+
+Operación                  | DUENO | CLINIC_ADMIN | RECEPCIONISTA | VETERINARIO
+---------------------------|-------|-------------|--------------|------------
+Crear sesión               |  ✅   |      ✅     |      ✅      |     ✅
+Ver sesión (propia clínica)|  ✅*  |      ✅**   |      ✅**    |     ✅
+Iniciar sesión             |  ❌   |      ❌     |      ❌      |     ✅***
+Finalizar sesión           |  ❌   |      ❌     |      ❌      |     ✅***
+Cancelar sesión            |  ✅*  |      ✅**   |      ✅**    |     ✅
+
+* DUENO_MASCOTA: solo si session.owner_id === JWT.sub
+** CLINIC_ADMIN / RECEPCIONISTA: solo si session.clinic_id === JWT.clinic_id
+*** VETERINARIO: solo si session.veterinarian_id === JWT.sub
+
+Regla crítica de inicio:
+  No se puede iniciar más de 5 minutos antes de scheduled_at.
+
+Regla crítica de token:
+  No se puede solicitar token más de 5 minutos antes de scheduled_at.
+  La sesión debe estar en estado IN_PROGRESS para poder obtener token.
+
+Seguridad Daily.co:
+  - API Key solo vive en el servidor (variable de entorno).
+  - El frontend nunca recibe la API Key.
+  - Los tokens de Daily tienen expiración de 6 horas.
+  - La sala de Daily expira 24 horas después de creada.
+
+─────────────────────────────────────────────────────────────────────────────
+6. COMUNICACIÓN CON OTROS SERVICIOS
+─────────────────────────────────────────────────────────────────────────────
+
+→ Appointment Service (3005):
+  GET /api/v1/appointments/:id
+  Uso: Valida que la cita existe y que appointment.type === 'TELEMEDICINA'
+  Si 404        → 404 (cita no encontrada)
+  Si type ≠ TELEMEDICINA → 400
+  Si no responde → 502 (fail-secure)
+
+→ Notification Service (3007):
+  POST /api/v1/notifications
+  Uso: Envía notificación inmediata tipo TELEMED cuando la sesión pasa a IN_PROGRESS.
+  Fire-and-forget: no afecta el flujo principal si falla.
+
+Eventos publicados (console.log estructurado, sin broker):
+  telemed.session.created   → { sessionId, appointmentId, clinicId, ownerId, petId, scheduledAt }
+  telemed.session.started   → { sessionId, startedAt }
+  telemed.session.completed → { sessionId, durationMinutes, endedAt }
+
+─────────────────────────────────────────────────────────────────────────────
+7. VARIABLES DE ENTORNO
+─────────────────────────────────────────────────────────────────────────────
+
+PORT=3006
+NODE_ENV=development
+JWT_SECRET=<secreto compartido con todos los servicios>
+SUPABASE_URL=<url del proyecto supabase>
+SUPABASE_SERVICE_ROLE_KEY=<service role key>
+ALLOWED_ORIGINS=http://localhost:3000
+APPOINTMENT_SERVICE_URL=http://localhost:3005
+NOTIFICATION_SERVICE_URL=http://localhost:3007
+DAILY_API_KEY=<api key de Daily.co — NUNCA exponer al frontend>
+
+─────────────────────────────────────────────────────────────────────────────
+8. RESPUESTA ESTÁNDAR
+─────────────────────────────────────────────────────────────────────────────
+
+Éxito:  { "success": true,  "message": "...", "data": <TelemedSession> }
+Error:  { "success": false, "message": "...", "errors": [...] }
+
+Códigos HTTP:
+  200 OK | 201 Creado | 400 Parámetro inválido | 401 No autenticado
+  403 Sin permisos | 404 No encontrado | 409 Conflicto de estado
+  500 Error interno | 502 Error con Appointment Service
+
+─────────────────────────────────────────────────────────────────────────────
+9. LÓGICA CLAVE
+─────────────────────────────────────────────────────────────────────────────
+
+1. room_id  → nombre de sala generado por Daily.co (slug único)
+2. room_url → URL real de Daily.co (https://<subdomain>.daily.co/<room-name>)
+3. Una cita solo puede tener UNA sesión (unicidad por appointment_id, HTTP 409 si existe)
+4. Inicio permitido hasta 5 min antes de scheduled_at
+5. duration_minutes = round((ended_at - started_at) / 60_000 ms) — para facturación
+6. Token Daily válido por 6 horas | Sala Daily expira 24 horas después de creada
+7. Transiciones de estado válidas:
+     CREATED     → IN_PROGRESS | CANCELLED
+     READY       → IN_PROGRESS | CANCELLED
+     IN_PROGRESS → COMPLETED   | (CANCELLED no permitido en esta impl.)
+     COMPLETED   → [terminal]
+     CANCELLED   → [terminal]
+
+─────────────────────────────────────────────────────────────────────────────
+10. INTEGRACIÓN DAILY.CO
+─────────────────────────────────────────────────────────────────────────────
+
+Archivo: src/utils/daily.util.ts
+
+createDailyRoom()
+  POST https://api.daily.co/v1/rooms
+  Header: Authorization: Bearer DAILY_API_KEY
+  Body: { privacy: 'private', properties: { exp, enable_chat, enable_screenshare } }
+  Retorna: DailyRoom { id, name, url, privacy, created_at }
+  → room_id = dailyRoom.name
+  → room_url = dailyRoom.url
+
+createmeetingToken(roomName, userId, isOwner)
+  POST https://api.daily.co/v1/meeting-tokens
+  Body: { properties: { room_name, user_id, is_owner, exp } }
+  Retorna: string (JWT firmado por Daily)
+  → Expiración: 6 horas
+  → is_owner=true para VETERINARIO (puede grabar, expulsar, compartir pantalla)
+  → is_owner=false para DUENO_MASCOTA (participante estándar)
+
+Flujo del frontend para unirse a una consulta:
+  1. GET /api/v1/telemed/sessions/:id  → obtener sesión y scheduled_at/status
+  2. (Countdown en frontend hasta scheduled_at)
+  3. Cuando status=IN_PROGRESS: POST /api/v1/telemed/sessions/:id/token → { room_url, token }
+  4. window.open(room_url + '?t=' + token)  ← o iframe con DailyIframe
+
+─────────────────────────────────────────────────────────────────────────────
+11. CHANGELOG
+─────────────────────────────────────────────────────────────────────────────
+
+v2.1.0 — 2026-04-13
+  • Integración telemed → notification: envío de notificación al iniciar consulta (startSession)
+  • Integración fire-and-forget sin afectar flujo principal de telemedicina
+  • Nueva variable de entorno: NOTIFICATION_SERVICE_URL
+
+v2.0.0 — 2026-04-13
+  • Integración real con Daily.co para videollamadas (createDailyRoom + createMeetingToken)
+  • Nuevo endpoint POST /sessions/:id/token → genera token privado por usuario
+  • Tokens firmados por Daily.co (JWT): nunca se expone la API Key al frontend
+  • Validación de acceso al token por horario (ventana -5 min antes de scheduled_at)
+  • Sesión debe estar IN_PROGRESS para poder obtener token (error 400 si no)
+  • Roles en Daily: VETERINARIO → is_owner=true | DUENO_MASCOTA → is_owner=false
+  • room_id = nombre real de sala Daily.co | room_url = URL real de Daily.co
+  • duration_minutes calculado exacto para uso en Billing Service futuro
+  • Respuesta de /token incluye scheduled_at + status (base para countdown en frontend)
+  • Nueva variable de entorno: DAILY_API_KEY
+  • Nuevo archivo: src/utils/daily.util.ts
+  • TypeScript estricto mantenido — 0 errores de compilación
+
+v1.0.0 — 2026-04-13
+  • Implementación inicial completa
+  • CRUD de sesiones con validación de tipo de cita
+  • Generación de room_id (UUID) y room_url
+  • Control de ciclo de vida: CREATED → IN_PROGRESS → COMPLETED / CANCELLED
+  • Validación de tiempo de inicio (ventana de 5 min)
+  • Cálculo automático de duración al finalizar
+  • Restricciones de acceso por rol (DUENO, CLINIC_ADMIN, RECEPCIONISTA, VETERINARIO)
+  • Validación contra Appointment Service (fail-secure 502)
+  • Eventos de dominio simulados: created, started, completed
+  • TypeScript estricto — 0 errores de compilación
+  • Servicio escucha en 0.0.0.0 para compatibilidad Railway/contenedores
+
+================================================================================
