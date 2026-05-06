@@ -17,7 +17,7 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
   const internalKey = req.headers['x-internal-service-key'];
   const expectedKey = process.env['INTERNAL_SERVICE_KEY'] ?? 'petwell_internal_secret';
   if (internalKey && internalKey === expectedKey) {
-    req.user = { sub: 'internal', id: 'internal', email: 'internal@petwell.co', role: 'CLINIC_ADMIN', clinic_id: null };
+    req.user = { sub: 'internal', id: 'internal', email: 'internal@petwell.co', role: 'CLINIC_ADMIN', clinic_id: undefined };
     next();
     return;
   }
