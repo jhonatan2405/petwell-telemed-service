@@ -132,9 +132,51 @@ export async function getSessionByAppointment(
   appointmentId: string,
   user: JwtPayload
 ): Promise<TelemedSession> {
-  const session = await findSessionByAppointmentId(appointmentId);
+  let session = await findSessionByAppointmentId(appointmentId);
+
+  // ── Lazy creation: if no session exists, create it on-the-fly ──────────────
   if (!session) {
-    throw makeError('No se encontró sesión para esta cita', 404);
+    console.log(`[telemed] Sesión no encontrada para cita ${appointmentId} — intentando creación lazy...`);
+    try {
+      const internalKey = process.env['INTERNAL_SERVICE_KEY'] ?? 'petwell_internal_secret';
+      const apptRes = await axios.get(
+        `${env.APPOINTMENT_SERVICE_URL}/api/v1/appointments/${appointmentId}`,
+        {
+          headers: { 'x-internal-service-key': internalKey },
+          timeout: 8000,
+        }
+      );
+
+      const appt = apptRes.data?.data;
+      if (!appt || appt.type !== 'TELEMEDICINA') {
+        throw makeError('La cita no es de tipo TELEMEDICINA o no existe', 404);
+      }
+
+      // Build scheduled_at from appointment date + time (Colombia UTC-5)
+      const scheduledAt = `${appt.appointment_date}T${appt.start_time}-05:00`;
+
+      // Create a Daily.co room and persist the session
+      const dailyRoom = await createDailyRoom();
+      session = await insertSession({
+        appointment_id: appointmentId,
+        clinic_id:       appt.clinic_id,
+        veterinarian_id: appt.veterinarian_id,
+        owner_id:        appt.owner_id,
+        pet_id:          appt.pet_id,
+        room_id:         dailyRoom.name,
+        room_url:        dailyRoom.url,
+        status:          'CREATED',
+        scheduled_at:    scheduledAt,
+        started_at:      null,
+        ended_at:        null,
+        duration_minutes: null,
+      });
+      console.log(`[telemed] ✅ Sesión creada lazy para cita ${appointmentId}: ${session.id}`);
+    } catch (lazyErr: unknown) {
+      const e = lazyErr as NodeJS.ErrnoException;
+      if (e.code) throw lazyErr; // re-throw typed errors
+      throw makeError('No se encontró sesión para esta cita y no se pudo crear', 404);
+    }
   }
 
   // Apply same access rules as getSessionById
@@ -153,6 +195,7 @@ export async function getSessionByAppointment(
 
   return session;
 }
+
 
 // ─── GET ACTIVE SESSION ──────────────────────────────────────────────────────────
 export async function getActiveSession(user: JwtPayload): Promise<TelemedSession | null> {
