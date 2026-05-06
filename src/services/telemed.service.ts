@@ -274,16 +274,17 @@ export async function generateAccessToken(
     throw makeError('No tienes acceso a esta sesión de telemedicina', 403);
   }
 
-  // 2. Validar ventana de tiempo (acceso máximo 5 min antes de la cita)
-  const allowedStart = new Date(session.scheduled_at).getTime() - 5 * 60 * 1000;
-  const now = Date.now();
-
-  if (now < allowedStart) {
-    const minutesLeft = Math.ceil((allowedStart - now) / 60000);
-    throw makeError(
-      `La consulta aún no está disponible. Disponible en ${minutesLeft} minuto(s).`,
-      403
-    );
+  // 2. Validar ventana de tiempo (acceso máximo 30 min antes de la cita para el dueño)
+  if (user.role === 'DUENO_MASCOTA') {
+    const allowedStart = new Date(session.scheduled_at).getTime() - 30 * 60 * 1000;
+    const now = Date.now();
+    if (now < allowedStart) {
+      const minutesLeft = Math.ceil((allowedStart - now) / 60000);
+      throw makeError(
+        `La consulta aún no está disponible. Disponible en ${minutesLeft} minuto(s).`,
+        403
+      );
+    }
   }
 
   // 3. Validar que la sesión está IN_PROGRESS
@@ -343,12 +344,15 @@ export async function startSession(id: string, user: JwtPayload): Promise<Teleme
     throw makeError(`No se puede iniciar una sesión en estado ${session.status}`, 409);
   }
 
-  // Cannot start before scheduled time (5 min grace window)
-  const scheduledMs = new Date(session.scheduled_at).getTime();
-  const nowMs = Date.now();
-  const GRACE_MS = 5 * 60 * 1000; // 5 minutes early allowed
-  if (nowMs < scheduledMs - GRACE_MS) {
-    throw makeError('No se puede iniciar la sesión antes de la hora programada', 400);
+  // Cannot start before scheduled time — only enforced for non-vets
+  // VETERINARIO can start at any time (connectivity tests, early patients, etc.)
+  if (user.role !== 'VETERINARIO') {
+    const scheduledMs = new Date(session.scheduled_at).getTime();
+    const nowMs = Date.now();
+    const GRACE_MS = 30 * 60 * 1000; // 30 minutes early allowed for others
+    if (nowMs < scheduledMs - GRACE_MS) {
+      throw makeError('No se puede iniciar la sesión antes de la hora programada', 400);
+    }
   }
 
   const updated = await updateSessionStatus(id, {
