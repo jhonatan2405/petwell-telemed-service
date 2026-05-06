@@ -1,0 +1,67 @@
+========================================================================
+                     REPORTE DE TESTING - TELEMED SERVICE
+========================================================================
+
+1. INTRODUCCIÓN
+------------------------------------------------------------------------
+El presente documento detalla la implementación de pruebas automatizadas para el microservicio "telemed-service". Este microservicio es fundamental para la gestión de las consultas de telemedicina, conectando a veterinarios y dueños de mascotas mediante la plataforma Daily.co. 
+
+Se implementó una suite de pruebas completa utilizando Jest y Supertest, con el objetivo de asegurar la estabilidad, fiabilidad y correcto manejo de errores en el sistema sin modificar el código de producción existente.
+
+2. PRUEBAS UNITARIAS
+------------------------------------------------------------------------
+Las pruebas unitarias se enfocaron en validar de forma aislada las unidades funcionales del sistema, principalmente la lógica de negocio en los servicios y utilidades:
+- telemed.service: Se comprobó la correcta creación, recuperación, actualización y finalización de las sesiones. También se verificaron las restricciones lógicas, como las validaciones de antelación para unirse a las llamadas y la pertenencia a la cita.
+- daily.util: Se verificó la correcta interacción (simulada) con la API externa de videollamadas.
+- telemed.repository: Se validó que las operaciones de consulta, inserción y actualización a base de datos estuviesen correctamente estructuradas.
+
+3. PRUEBAS DE INTEGRACIÓN
+------------------------------------------------------------------------
+Las pruebas de integración (utilizando Supertest) evaluaron el comportamiento de la API en conjunto, garantizando que el enrutamiento, la autenticación y los controladores trabajen armónicamente:
+Se probaron los siguientes endpoints principales:
+- POST /api/v1/telemed/sessions: Validación de creación de sesiones (datos faltantes y casos de éxito).
+- GET /api/v1/telemed/sessions/:id: Recuperación de datos de una sesión, incluyendo el manejo cuando una sesión no existe (404).
+- PATCH /api/v1/telemed/sessions/:id/start: Verificación del inicio de sesiones y de la seguridad de que solo el veterinario autorizado puede iniciarlas.
+- GET /api/v1/telemed/sessions/active: Comprobación del endpoint de polling de sesión activa.
+Adicionalmente, se comprobaron las validaciones generales de autenticación en las rutas (ausencia de token o tokens inválidos).
+
+4. USO DE MOCKS
+------------------------------------------------------------------------
+Un "mock" o simulacro es un reemplazo de una función o dependencia real por una versión controlada. En este microservicio se implementaron múltiples mocks por dos motivos fundamentales: evitar modificar bases de datos reales y simular interacciones de red sin depender del exterior.
+- Mock de Supabase/Base de Datos: Se simuló el repositorio para interceptar las consultas y fingir respuestas exitosas o errores (ej. sesión no encontrada).
+- Mock de Axios / Daily.co: Se evitaron llamadas reales a los microservicios de Appointments, Notifications y la API externa Daily.co, simulando respuestas exitosas y tiempos de espera agotados para validar cómo reacciona nuestro sistema.
+
+5. USO DE MATCHERS
+------------------------------------------------------------------------
+Los matchers en Jest son funciones que comparan el resultado real del código con el esperado.
+- toBe: Compara valores primitivos exacta y estrictamente (por ejemplo, validar un código de estado HTTP 200).
+- toEqual: Se usó para comparar el contenido interno de objetos y arreglos, útil al verificar la respuesta JSON de un endpoint.
+- toHaveProperty: Revisa si un objeto cuenta con una propiedad específica y opcionalmente su valor (ej. revisar si una respuesta contiene "id").
+- toBeDefined: Asegura que un valor no sea "undefined", útil para comprobar la existencia de datos en una respuesta sin importar su valor exacto.
+
+6. PRUEBAS ASÍNCRONAS (ASYNC)
+------------------------------------------------------------------------
+Al interactuar con bases de datos y redes, nuestro sistema es asíncrono. Para probarlo se usaron las palabras reservadas async/await, las cuales pausan la prueba hasta que la operación termine.
+- Se usó expect().rejects para verificar que promesas lanzaran errores en los escenarios negativos.
+- Se usó resolves o simplemente llamadas con await para capturar la respuesta exitosa y luego someterla a los matchers.
+
+7. COBERTURA DE CÓDIGO (COVERAGE)
+------------------------------------------------------------------------
+La cobertura de código indica qué porcentaje de nuestro código fuente fue ejecutado durante las pruebas. Sus métricas clave son:
+- Statements (Sentencias): Porcentaje de instrucciones completas que se han ejecutado.
+- Lines (Líneas): Líneas físicas de código que fueron visitadas por el test.
+- Functions (Funciones): Cantidad de funciones de nuestro código que fueron invocadas al menos una vez.
+- Branches (Ramas): Porcentaje de los diferentes caminos de decisión que se tomaron (if, else, try, catch).
+
+Interpretación: Un porcentaje mayor al 70% indica un código fuertemente testeado y confiable, cubriendo la mayoría de los escenarios críticos y caminos principales.
+
+8. EXPLICACIÓN DEL REPORTE HTML
+------------------------------------------------------------------------
+El sistema generó un reporte visual dentro de la carpeta "coverage/lcov-report/index.html". Este archivo puede abrirse en cualquier navegador web. Al analizar el código dentro del reporte, se encuentran distintos colores:
+- Verde (Cubierto): Indica que esa línea de código o función fue ejecutada satisfactoriamente por al menos una prueba.
+- Rojo (No Cubierto): Indica código huérfano de pruebas, es decir, ninguna prueba logró entrar a ese camino (por ejemplo, validaciones de un error muy específico).
+- Amarillo (Parcial): Generalmente asociado a los "Branches", indica que se probó un camino (como el "if"), pero nunca se simuló la condición para entrar a su "else".
+
+9. CONCLUSIÓN
+------------------------------------------------------------------------
+La implementación de testing automatizado es el pilar de la ingeniería de software moderna. En un microservicio de telemedicina donde convergen distintos actores (veterinarios, dueños y servicios externos), las pruebas previenen regresiones, ayudan a refactorizar el código con confianza y documentan el comportamiento esperado, resultando en un sistema final altamente robusto y preparado para producción.
