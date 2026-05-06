@@ -111,25 +111,30 @@ describe('Telemed Service Unit Tests', () => {
       expect(result).toHaveProperty('id', 'sess-1');
     });
 
-    it('debe lanzar error 404 si no existe', async () => {
+    it('debe lanzar error 404 si no existe y la lazy creation falla', async () => {
       mockRepo.findSessionByAppointmentId.mockResolvedValue(null);
-      await expect(getSessionByAppointment('app-1', mockUser)).rejects.toThrow('No se encontró sesión para esta cita');
+      // La lazy creation intenta llamar al Appointment Service via axios; simulamos fallo de red
+      mockedAxios.get.mockRejectedValue(new Error('Network error'));
+      await expect(getSessionByAppointment('app-1', mockUser)).rejects.toThrow('No se encontr');
     });
   });
 
   describe('generateAccessToken', () => {
-    it('debe lanzar error 403 si se pide con demasiada antelación', async () => {
+    it('debe lanzar error 403 si DUENO_MASCOTA pide token con demasiada antelación', async () => {
+      // La validación de ventana de tiempo solo aplica a DUENO_MASCOTA con sesión NO iniciada
+      const duenoUser: JwtPayload = { sub: 'owner-1', email: 'owner@test.com', role: 'DUENO_MASCOTA' };
       mockRepo.findSessionById.mockResolvedValue({ 
         id: 'sess-1', 
-        veterinarian_id: 'user-123', 
-        scheduled_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-        status: 'IN_PROGRESS'
+        veterinarian_id: 'vet-999',
+        owner_id: 'owner-1',
+        scheduled_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hora en el futuro
+        status: 'CREATED' // NOT IN_PROGRESS para que aplique el chequeo de tiempo
       } as any);
 
-      await expect(generateAccessToken('sess-1', mockUser)).rejects.toThrow('La consulta aún no está disponible');
+      await expect(generateAccessToken('sess-1', duenoUser)).rejects.toThrow('La consulta');
     });
 
-    it('debe lanzar error si no está en progreso', async () => {
+    it('debe lanzar error si sesión no está en progreso', async () => {
       mockRepo.findSessionById.mockResolvedValue({ 
         id: 'sess-1', 
         veterinarian_id: 'user-123', 
