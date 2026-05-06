@@ -274,8 +274,9 @@ export async function generateAccessToken(
     throw makeError('No tienes acceso a esta sesión de telemedicina', 403);
   }
 
-  // 2. Validar ventana de tiempo (acceso máximo 30 min antes de la cita para el dueño)
-  if (user.role === 'DUENO_MASCOTA') {
+  // 2. Validar ventana de tiempo solo si la sesión AÚN NO ha iniciado
+  // Si ya está IN_PROGRESS, cualquier participante puede entrar sin restricción de hora
+  if (session.status !== 'IN_PROGRESS' && user.role === 'DUENO_MASCOTA') {
     const allowedStart = new Date(session.scheduled_at).getTime() - 30 * 60 * 1000;
     const now = Date.now();
     if (now < allowedStart) {
