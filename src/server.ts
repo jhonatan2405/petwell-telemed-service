@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import promBundle from 'express-prom-bundle';
 import { env } from './config/env';
 import telemedRouter from './routes/telemed.routes';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
@@ -15,6 +16,16 @@ app.use(cors({
   credentials: true,
 }));
 app.use(morgan('dev'));
+
+// ─── Prometheus Metrics ───────────────────────────────────────────────────────
+const metricsMiddleware = promBundle({
+  includeMethod: true,
+  includePath: true,
+  includeStatusCode: true,
+  includeUp: true,
+  promClient: { collectDefaultMetrics: {} },
+});
+app.use(metricsMiddleware);
 
 // ─── Body parsing ────────────────────────────────────────────────────────────
 app.use(express.json());
